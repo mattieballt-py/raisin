@@ -8,13 +8,14 @@ export default function HomePage() {
     <div
       style={{
         minHeight: '100vh',
-        background: '#f5f5f5',
+        background: '#ffffffff',
         fontFamily: "'Nunito Sans', sans-serif",
         display: 'flex',
         flexDirection: 'column',
         justifyContent: 'center',
         alignItems: 'center',
-        padding: 24,
+        margin: '0',
+        padding: '0',
       }}
     >
       <Image
