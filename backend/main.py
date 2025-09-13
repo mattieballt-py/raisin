@@ -236,3 +236,28 @@ if __name__ == "__main__":
     )
 
 
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from livekit_server_sdk import LiveKitServer, RoomGrant
+
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+app = FastAPI()
+
+# Allow frontend to fetch token
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+livekit_server = LiveKitServer(os.getenv("LIVEKIT_API_KEY"), os.getenv("LIVEKIT_API_SECRET"), os.getenv("LIVEKIT_URL"))
+
+@app.get("/token")
+def get_token():
+    grant = RoomGrant(room="raisin_room")
+    token = livekit_server.issue_token(identity="user123", grants=[grant])
+    return {"token": token}
