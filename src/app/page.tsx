@@ -1,3 +1,4 @@
+import Image from 'next/image';
 import Agent from '@/components/Agent';
 
 export default function Home() {
@@ -28,17 +29,27 @@ export default function Home() {
           boxShadow: '0 2px 8px rgba(0,0,0,0.03)',
         }}
       >
-        <span
-          style={{
-            fontFamily: "'Merriweather', serif",
-            fontWeight: 700,
-            fontSize: 24,
-            color: '#222',
-            letterSpacing: '0.02em',
-          }}
-        >
-          Raisin
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <Image
+            src="/Assets/raisinlogo.png"
+            alt="Raisin Logo"
+            width={36}
+            height={36}
+            style={{ borderRadius: 8 }}
+            priority
+          />
+          <span
+            style={{
+              fontFamily: "'Merriweather', serif",
+              fontWeight: 700,
+              fontSize: 24,
+              color: '#222',
+              letterSpacing: '0.02em',
+            }}
+          >
+            Raisin
+          </span>
+        </div>
       </nav>
 
       {/* Main Content */}
