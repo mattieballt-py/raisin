@@ -52,3 +52,8 @@ __pycache__/
 env/
 venv/
 .env
+
+# in .gitignore (project root)
+.env
+venv/
+__pycache__/

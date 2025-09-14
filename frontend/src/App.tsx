@@ -1,7 +1,7 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
-import LiveStream from './pages/LiveStream';
-import Home from './pages/Home';
+import LiveStream from '../pages/LiveStream';
+import Home from '../pages/Home';
 
 function App() {
   return (
