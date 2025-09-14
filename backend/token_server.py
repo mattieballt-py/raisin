@@ -3,11 +3,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
-from livekit.api import AccessToken, VideoGrant  # Corrected import
+import jwt  # Use pyjwt for token generation
 import os
+import time
 from dotenv import load_dotenv
 
-# Load environment variables from backend/.env
+# Load .env
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
@@ -19,10 +20,8 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET:
     raise RuntimeError("Set LIVEKIT_API_KEY and LIVEKIT_API_SECRET in backend/.env")
 
-# Initialize FastAPI app
 app = FastAPI(title="Token Server for LiveKit")
 
-# Allow requests from the frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[FRONTEND_URL],
@@ -31,39 +30,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Request body model
 class TokenRequest(BaseModel):
     room: str
     identity: str
     name: Optional[str] = None
 
-# POST endpoint to get a LiveKit token
 @app.post("/api/get-token")
 def get_token(req: TokenRequest):
-    """
-    Request body: { "room": "room-name", "identity": "user-123", "name": "Optional name" }
-    Response: { "token": "<jwt>", "url": "<livekit_url>" }
-    """
     try:
-        # Create a VideoGrant
-        grant = VideoGrant(room_join=True, room=req.room)
+        # Current time
+        now = int(time.time())
 
-        # Create AccessToken with the grant
-        token_obj = AccessToken(
-            api_key=LIVEKIT_API_KEY,
-            api_secret=LIVEKIT_API_SECRET,
-            grants=[grant],         # Pass grants as a list
-            identity=req.identity,  # Required
-            name=req.name           # Optional
-        )
+        # Token payload
+        payload = {
+            "iss": LIVEKIT_API_KEY,  # API Key
+            "exp": now + 3600,  # Token expiration (1 hour)
+            "nbf": now,  # Not valid before now
+            "video": {
+                "room": req.room,
+                "participant_identity": req.identity,
+                "participant_name": req.name,
+            },
+        }
 
-        jwt = token_obj.to_jwt()
-        return {"token": jwt, "url": LIVEKIT_URL}
+        # Generate JWT token
+        token = jwt.encode(payload, LIVEKIT_API_SECRET, algorithm="HS256")
+
+        return {"token": token, "url": LIVEKIT_URL}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Token generation failed: {e}")
 
-# Optional: simple root endpoint to test server
 @app.get("/")
 def root():
     return {"message": "Backend is running!"}
