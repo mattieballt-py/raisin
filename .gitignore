@@ -57,3 +57,4 @@ venv/
 .env
 venv/
 __pycache__/
+frontend/node_modules/@next/swc-darwin-arm64/next-swc.darwin-arm64.node
