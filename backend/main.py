@@ -23,14 +23,31 @@ from livekit.agents import (
 from livekit.agents.voice import Agent, AgentSession
 from livekit.plugins import bey, openai as openai_plugin
 
+# ---------- Config ----------
+SCREEN_INTERVAL_SEC = 6      # how often to refresh screenshots
+CTX_MAX_CHARS = 1200         # keep system prompt short & snappy
+
+BASE_INSTRUCTIONS = """You are a helpful AI assistant that can see the user's screen and hear their voice in real-time.
+
+Important: Before each response, you will receive a SCREEN_CONTEXT message that tells you what the user is currently viewing. Always use this latest screen context to inform your responses.
+
+Respond naturally and conversationally. You can:
+- Comment on what you see on their screen in detail, so tell exactly what page/app they are using
+- Help with applications or content they're viewing  
+- Answer questions about what's displayed
+- Provide assistance based on their current context
+
+Keep responses concise and helpful.
+"""
+
+# ---------- Screenshot manager ----------
 class ScreenshotContextManager:
     """Manages screenshot context for the realtime conversation"""
-    
-    def __init__(self, interval: int = 5):
+
+    def __init__(self, interval: int = SCREEN_INTERVAL_SEC):
         self.interval = interval
         self.current_screenshot_description = ""
         self.running = False
-        # Initialize OpenAI client (synchronous version)
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OPENAI_API_KEY environment variable not set!")
@@ -38,27 +55,24 @@ class ScreenshotContextManager:
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
         pyautogui.FAILSAFE = False
         print("✅ Screenshot context manager initialized")
-    
+
     async def start(self):
-        """Start screenshot analysis"""
         self.running = True
         asyncio.create_task(self.screenshot_analysis_loop())
         print("📸 Screenshot context manager started")
-    
+
     async def stop(self):
-        """Stop screenshot analysis"""
         self.running = False
         self.executor.shutdown(wait=False)
-    
+
     async def screenshot_analysis_loop(self):
-        """Analyze screenshots and update context"""
         while self.running:
             try:
                 print("📸 Taking and analyzing screenshot...")
-                
+
                 # Take screenshot
                 screenshot = pyautogui.screenshot()
-                
+
                 # Convert RGBA to RGB if needed
                 if screenshot.mode == "RGBA":
                     screenshot = screenshot.convert("RGB")
@@ -68,27 +82,27 @@ class ScreenshotContextManager:
                     ratio = 1024 / screenshot.width
                     new_height = int(screenshot.height * ratio)
                     screenshot = screenshot.resize((1024, new_height), Image.Resampling.LANCZOS)
-                
+
                 # Convert to base64
                 buffer = io.BytesIO()
                 screenshot.save(buffer, format='JPEG', quality=85)
                 image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
                 screenshot_url = f"data:image/jpeg;base64,{image_base64}"
-                
-                # Analyze screenshot with GPT-4V (run in thread pool)
+
+                # Analyze screenshot with GPT-4o (run sync call in a thread)
                 description = await self.analyze_screenshot(screenshot_url)
                 self.current_screenshot_description = description
-                
+
                 print(f"🖼️ Screenshot analyzed: {description[:100]}...")
-                
+
                 await asyncio.sleep(self.interval)
-                
+
             except Exception as e:
                 print(f"❌ Screenshot analysis error: {e}")
                 await asyncio.sleep(1)
-    
+
     def _analyze_screenshot_sync(self, screenshot_url: str) -> str:
-        """Synchronous screenshot analysis"""
+        """Synchronous screenshot analysis (runs in thread pool)"""
         try:
             response = self.openai_client.chat.completions.create(
                 model="gpt-4o",
@@ -98,124 +112,179 @@ class ScreenshotContextManager:
                         "content": [
                             {
                                 "type": "text",
-                                "text": "Describe what you see on this screen in 2-3 sentences. Focus on the main content, applications, or activities visible."
+                                "text": (
+                                    "Analyze this screenshot briefly:\n"
+                                    "- What specific app/website is visible?\n"
+                                    "- What is the user likely doing?\n"
+                                    "- Any notable content, text, or interface elements?\n"
+                                    "Be specific about app names and content. Keep it concise - 2-3 sentences max."
+                                ),
                             },
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": screenshot_url}
-                            }
-                        ]
+                            {"type": "image_url", "image_url": {"url": screenshot_url}},
+                        ],
                     }
                 ],
-                max_tokens=150
+                max_tokens=150,
             )
-            
-            return response.choices[0].message.content
-            
+            return response.choices[0].message.content or "No description."
         except Exception as e:
             print(f"❌ Sync screenshot analysis error: {e}")
             return "Unable to analyze current screen content."
-    
+
     async def analyze_screenshot(self, screenshot_url: str) -> str:
-        """Analyze screenshot and return description (async wrapper)"""
+        """Async wrapper: run sync OpenAI call in a thread"""
         try:
-            # Run the synchronous OpenAI call in a thread pool
             loop = asyncio.get_event_loop()
-            description = await loop.run_in_executor(
-                self.executor, 
-                self._analyze_screenshot_sync, 
-                screenshot_url
+            return await loop.run_in_executor(
+                self.executor, self._analyze_screenshot_sync, screenshot_url
             )
-            return description
-            
         except Exception as e:
             print(f"❌ Screenshot analysis error: {e}")
             return "Unable to analyze current screen content."
-    
+
     def get_current_context(self) -> str:
-        """Get current screenshot context for conversation"""
         if self.current_screenshot_description:
-            return f"Current screen context: {self.current_screenshot_description}"
-        return "No current screen context available."
+            return self.current_screenshot_description.strip()
+        return "Screen content not yet captured."
 
+# ---------- Context-Aware Agent ----------
 class ContextAwareAgent(Agent):
-    """Agent that includes screenshot context in conversations"""
-    
-    def __init__(self, instructions: str, screenshot_manager: ScreenshotContextManager):
-        # Include screenshot context in instructions
-        enhanced_instructions = f"""{instructions}
-
-IMPORTANT: You can see what's on the user's screen. Here's what I can currently see:
-{screenshot_manager.get_current_context()}
-
-When responding, you can reference what you see on their screen. This context is updated every 5 seconds.
-"""
-        super().__init__(instructions=enhanced_instructions)
+    def __init__(self, screenshot_manager: ScreenshotContextManager):
         self.screenshot_manager = screenshot_manager
-        self.last_context_update = 0
-    
-    async def update_context_if_needed(self):
-        """Update agent context with latest screenshot info"""
-        current_time = time.time()
-        if current_time - self.last_context_update > 20:  # Update every 5 seconds
-            new_context = self.screenshot_manager.get_current_context()
-            # Update the agent's understanding of current screen
-            self.last_context_update = current_time
-            print(f"🔄 Updated agent context: {new_context[:50]}...")
+        super().__init__(instructions=BASE_INSTRUCTIONS)
 
+# ---------- Entrypoint ----------
 async def entrypoint(ctx: JobContext, avatar_id: Optional[str]) -> None:
     print("🚀 Starting realtime agent with screenshot context...")
-    
+
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
     print("✅ Connected to room")
 
-    # Create and start screenshot context manager
+    # Start screenshots
     screenshot_manager = ScreenshotContextManager()
     await screenshot_manager.start()
 
-    # Use OpenAI's RealtimeModel for smooth voice interaction
+    # Wait a moment for first screenshot
+    await asyncio.sleep(2)
+
+    # Create our context-aware agent
+    agent = ContextAwareAgent(screenshot_manager=screenshot_manager)
+
+    # Realtime LLM session
     local_agent_session = AgentSession(
         llm=openai_plugin.realtime.RealtimeModel(
             model="gpt-4o-realtime-preview",
-            voice="cedar"
+            voice="cedar",
         )
     )
     print("✅ Realtime agent session created")
 
-    if avatar_id is not None: 
-        bey_avatar_session = bey.AvatarSession(avatar_id=avatar_id)
-    else:
-        bey_avatar_session = bey.AvatarSession()
-    
+    # Track last context sent to avoid spam
+    last_context_sent = ""
+
+    async def inject_screen_context():
+        """Inject current screen context as a user message"""
+        nonlocal last_context_sent
+        
+        current_context = agent.screenshot_manager.get_current_context()
+        context_message = f"SCREEN_CONTEXT: {current_context}"
+        
+        # Only send if context has changed significantly
+        if context_message != last_context_sent:
+            last_context_sent = context_message
+            
+            try:
+                # Try to inject context by sending a system-style message
+                llm = local_agent_session.llm
+                
+                # Method 1: Try to add conversation item
+                if hasattr(llm, '_conversation') and hasattr(llm._conversation, 'add_item'):
+                    llm._conversation.add_item({
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "text", "text": context_message}]
+                    })
+                    print("✅ Context injected via conversation")
+                    return True
+                    
+                # Method 2: Try to send via WebSocket
+                if hasattr(llm, '_client') and llm._client:
+                    await llm._client.send({
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "message", 
+                            "role": "user",
+                            "content": [{"type": "text", "text": context_message}]
+                        }
+                    })
+                    print("✅ Context sent via WebSocket")
+                    return True
+                    
+                # Method 3: Try to add to session somehow
+                if hasattr(llm, 'add_user_message'):
+                    await llm.add_user_message(context_message)
+                    print("✅ Context added via add_user_message")
+                    return True
+                    
+            except Exception as e:
+                print(f"❌ Context injection failed: {e}")
+                
+            print(f"🔍 Context to inject: {context_message[:100]}...")
+            return False
+
+    # Log when user speaks and inject context
+    @local_agent_session.on("transcription")
+    def _(evt):
+        if evt.is_final:
+            print(f"📝 User said: {evt.text}")
+            # Inject context before agent responds
+            asyncio.create_task(inject_screen_context())
+
+    # Also inject context when agent starts speaking
+    @local_agent_session.on("agent_speech_started")
+    def _(evt):
+        print("🎤 Agent starting to speak - injecting latest context")
+        asyncio.create_task(inject_screen_context())
+
+    # Log agent responses
+    @local_agent_session.on("agent_speech")
+    def _(evt):
+        print(f"🤖 Agent response: {evt.text[:100]}...")
+
+    # (Optional) observe avatar media
+    @ctx.room.on("track_subscribed")
+    def _(track, pub, participant):
+        try:
+            kind = getattr(track.kind, "name", str(track.kind))
+        except Exception:
+            kind = str(track.kind)
+        print(f"✅ subscribed to {participant.identity} {kind}")
+
+    # Avatar hookup
+    bey_avatar_session = bey.AvatarSession(avatar_id=avatar_id) if avatar_id else bey.AvatarSession()
     await bey_avatar_session.start(local_agent_session, room=ctx.room)
     print("✅ Bey avatar session started")
 
-    # Create context-aware agent
-    agent = ContextAwareAgent(
-        instructions="""You are a helpful AI assistant that can see the user's screen and hear their voice in real-time. 
-        You have access to periodic screenshots of what the user is currently viewing.
-        
-        Respond naturally and conversationally. You can:
-        - Comment on what you see on their screen
-        - Help with applications or content they're viewing
-        - Answer questions about what's displayed
-        - Provide assistance based on their current context
-        
-        Keep responses concise and helpful.""",
-        screenshot_manager=screenshot_manager
-    )
+    # Periodic context injection
+    async def periodic_context_injection():
+        await asyncio.sleep(5)  # Wait for session to be established
+        while True:
+            await inject_screen_context()
+            await asyncio.sleep(10)  # Less frequent periodic updates
 
-    await local_agent_session.start(
-        agent=agent,
-        room=ctx.room,
-    )
-    print("✅ Context-aware agent started - I can see your screen and hear you in real-time!")
+    asyncio.create_task(periodic_context_injection())
 
-if __name__ == "__main__":
-    # Load environment variables FIRST
-    load_dotenv()
+    # Start the agent with our context-aware agent
+    await local_agent_session.start(agent=agent, room=ctx.room)
+    print("✅ Context-aware agent started — listening & seeing your screen")
     
-    # Check if API key is available
+    # Log the initial context
+    print(f"🔍 Initial screen context: {agent.screenshot_manager.get_current_context()}")
+
+# ---------- CLI ----------
+if __name__ == "__main__":
+    load_dotenv()
+
     if not os.getenv("OPENAI_API_KEY"):
         print("❌ OPENAI_API_KEY environment variable not found!")
         print("Please set it with: export OPENAI_API_KEY='your-api-key-here'")
@@ -227,6 +296,7 @@ if __name__ == "__main__":
     parser.add_argument("--avatar-id", type=str, help="Avatar ID to use.")
     args = parser.parse_args()
 
+    # LiveKit dev runner
     sys.argv = [sys.argv[0], "dev"]
     cli.run_app(
         WorkerOptions(
@@ -234,30 +304,3 @@ if __name__ == "__main__":
             worker_type=WorkerType.ROOM,
         )
     )
-
-
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from livekit_server_sdk import LiveKitServer, RoomGrant
-
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
-app = FastAPI()
-
-# Allow frontend to fetch token
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-livekit_server = LiveKitServer(os.getenv("LIVEKIT_API_KEY"), os.getenv("LIVEKIT_API_SECRET"), os.getenv("LIVEKIT_URL"))
-
-@app.get("/token")
-def get_token():
-    grant = RoomGrant(room="raisin_room")
-    token = livekit_server.issue_token(identity="user123", grants=[grant])
-    return {"token": token}
