@@ -1,9 +1,9 @@
 # backend/token_server.py
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
-from livekit.api import AccessToken, VideoGrants
+from livekit.api import AccessToken, VideoGrant  # Corrected import
 import os
 from dotenv import load_dotenv
 
@@ -37,7 +37,7 @@ class TokenRequest(BaseModel):
     identity: str
     name: Optional[str] = None
 
-# POST endpoint to get a token
+# POST endpoint to get a LiveKit token
 @app.post("/api/get-token")
 def get_token(req: TokenRequest):
     """
@@ -45,27 +45,25 @@ def get_token(req: TokenRequest):
     Response: { "token": "<jwt>", "url": "<livekit_url>" }
     """
     try:
-        # Create a grant allowing the user to join a room
-        grant = VideoGrants(room_join=True, room=req.room)
+        # Create a VideoGrant
+        grant = VideoGrant(room_join=True, room=req.room)
 
-        # Build the access token
-        token_obj = AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
-        token_obj.identity = req.identity
-        if req.name:
-            token_obj.name = req.name
-        token_obj.add_grant(grant)
+        # Create AccessToken with the grant
+        token_obj = AccessToken(
+            api_key=LIVEKIT_API_KEY,
+            api_secret=LIVEKIT_API_SECRET,
+            grants=[grant],         # Pass grants as a list
+            identity=req.identity,  # Required
+            name=req.name           # Optional
+        )
 
         jwt = token_obj.to_jwt()
-
         return {"token": jwt, "url": LIVEKIT_URL}
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Token generation failed: {e}")
-from fastapi.middleware.cors import CORSMiddleware
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Next.js dev server
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Optional: simple root endpoint to test server
+@app.get("/")
+def root():
+    return {"message": "Backend is running!"}
